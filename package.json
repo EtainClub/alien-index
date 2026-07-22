@@ -4,8 +4,10 @@
   "private": true,
   "scripts": {
     "dev": "next dev --webpack",
-    "build": "next build --webpack",
-    "start": "next start",
+    "build": "node scripts/build.mjs",
+    "start": "node scripts/start.mjs",
+    "preview": "npm run build && npm start",
+    "check:assets": "node scripts/check-assets.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

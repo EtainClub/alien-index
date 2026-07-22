@@ -5,6 +5,7 @@ import { ChangeEvent, PointerEvent, useCallback, useEffect, useMemo, useRef, use
 import { analyzePhoto } from "@/lib/photo-analyzer";
 import { AlienResult, calculateResult, PhotoSignal, questions } from "@/lib/scoring";
 import { ScanDraft, scanRepository } from "@/lib/session-store";
+import { sitePath } from "@/lib/site-path";
 
 type Screen = "home" | "briefing" | "quiz" | "game" | "photo" | "analysis" | "result";
 
@@ -366,7 +367,7 @@ function ResultScreen({ result, onRestart, onShare, shareState }: { result: Alie
 
       <section className="identity-card">
         <div className="portrait-wrap">
-          <Image src="/alien-portrait.png" alt={`${result.archetype} 외계인 캐릭터`} width={1024} height={1536} priority unoptimized />
+          <Image src={sitePath("/alien-portrait.png")} alt={`${result.archetype} 외계인 캐릭터`} width={1024} height={1536} priority />
           <div className="portrait-tint"/>
           <span className="portrait-label">IDENTITY CONFIRMED <Icon name="check" size={13}/></span>
         </div>
@@ -526,7 +527,7 @@ export default function AlienIndexApp() {
     setAnalysisStep(1);
 
     const portrait = new window.Image();
-    portrait.src = "/alien-portrait.png";
+    portrait.src = sitePath("/alien-portrait.png");
     try { await portrait.decode(); } catch { /* The result still has a CSS fallback background. */ }
     setAnalysisStep(2);
 

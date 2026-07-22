@@ -1,11 +1,15 @@
 import type { Metadata, Viewport } from "next";
+import { sitePath } from "@/lib/site-path";
 import "./globals.css";
 
 export const metadata: Metadata = {
   title: "Alien Index — 외계인 지수",
   description: "당신 안의 외계인 바이브를 측정하는 1분 성향 테스트",
   applicationName: "Alien Index",
-  manifest: "/manifest.webmanifest",
+  manifest: sitePath("/manifest.webmanifest"),
+  icons: {
+    icon: sitePath("/icon.svg"),
+  },
   appleWebApp: {
     capable: true,
     statusBarStyle: "default",

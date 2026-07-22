@@ -5,17 +5,41 @@
 ## 로컬 프리뷰
 
 ```bash
-npm install
+npm ci
 npm run dev
 ```
 
-브라우저에서 `http://localhost:3000`을 엽니다. 프로덕션 빌드는 다음 명령으로 확인할 수 있습니다.
+브라우저에서 `http://localhost:3000`을 엽니다. HTML 파일을 직접 열거나 VS Code Live Server로 실행하면 Next.js의 `/_next` CSS·JavaScript 경로를 처리하지 못하므로 반드시 위 명령으로 실행해야 합니다.
+
+프로덕션과 같은 방식으로 확인할 때는 다음 명령을 사용합니다. `npm start`는 빌드가 없거나 `git pull` 이후 소스가 바뀐 경우 자동으로 다시 빌드합니다.
 
 ```bash
-npm run typecheck
-npm run build
+npm ci
 npm start
 ```
+
+CSS와 이미지가 실제로 제공되는지는 서버 실행 중 별도 터미널에서 확인할 수 있습니다.
+
+```bash
+npm run check:assets -- http://localhost:3000/
+```
+
+## 하위 경로 배포
+
+리버스 프록시나 정적 호스팅에서 서비스를 `https://example.com/alien-index/` 아래에 둘 때는 빌드와 실행 모두 같은 경로를 지정합니다.
+
+```bash
+NEXT_PUBLIC_BASE_PATH=/alien-index npm start
+```
+
+Windows PowerShell에서는 다음과 같이 실행합니다.
+
+```powershell
+$env:NEXT_PUBLIC_BASE_PATH="/alien-index"
+npm start
+```
+
+이 경우 접속 주소는 `http://localhost:3000/alien-index/`이며, 자산 점검 주소에도 같은 경로를 포함합니다. 도메인 루트에서 서비스한다면 환경 변수를 설정하지 않습니다. 샘플은 [`.env.example`](./.env.example)에 있습니다.
 
 ## 구현 범위
 

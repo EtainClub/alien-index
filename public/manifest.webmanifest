@@ -2,11 +2,11 @@
   "name": "Alien Index — 외계인 지수",
   "short_name": "Alien Index",
   "description": "당신 안의 외계인 바이브를 측정하는 1분 성향 테스트",
-  "start_url": "/",
+  "start_url": ".",
   "display": "standalone",
   "background_color": "#f5f5f7",
   "theme_color": "#b8ff48",
   "icons": [
-    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
   ]
 }
