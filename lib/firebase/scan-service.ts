@@ -1,6 +1,5 @@
 "use client";
 
-import { doc, getDocFromServer } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
 import { getDownloadURL, ref, uploadBytes } from "firebase/storage";
 import { questions, type AlienResult } from "@/lib/scoring";
@@ -18,6 +17,9 @@ type CreateScanResponse = {
 type FinalizeScanResponse = {
   scanId: string;
   status: RemoteScanStatus;
+  result?: AlienResult | null;
+  generatedAssetPath?: string | null;
+  failure?: { code?: string; retryable?: boolean } | null;
 };
 
 export type RunRemoteScanInput = {
@@ -52,13 +54,13 @@ function normalizeAnswers(answers: Record<string, number>): Record<string, numbe
   }));
 }
 
-function waitForResult(uid: string, scanId: string, onStatus?: (status: RemoteScanStatus) => void) {
-  const { auth, firestore, storage } = getFirebaseServices();
+function waitForResult(uid: string, scanId: string, functions: ReturnType<typeof getFirebaseServices>["functions"], idempotencyKey: string, onStatus?: (status: RemoteScanStatus) => void) {
+  const { auth, storage } = getFirebaseServices();
   return new Promise<AlienResult>((resolve, reject) => {
     let settled = false;
     let pollTimer: number | null = null;
     let lastStatus: RemoteScanStatus | null = null;
-    const scanRef = doc(firestore, "users", uid, "scans", scanId);
+    const finalizeScan = httpsCallable<{ scanId: string; idempotencyKey: string }, FinalizeScanResponse>(functions, "finalizeScan");
     const finish = () => {
       settled = true;
       if (pollTimer !== null) window.clearTimeout(pollTimer);
@@ -71,13 +73,7 @@ function waitForResult(uid: string, scanId: string, onStatus?: (status: RemoteSc
     const poll = async () => {
       if (settled) return;
       try {
-        const snapshot = await getDocFromServer(scanRef);
-        if (!snapshot.exists()) {
-          pollTimer = window.setTimeout(() => void poll(), 1_500);
-          return;
-        }
-
-        const data = snapshot.data();
+        const { data } = await finalizeScan({ scanId, idempotencyKey });
         const status = data.status as RemoteScanStatus;
         if (status !== lastStatus) {
           lastStatus = status;
@@ -112,7 +108,7 @@ function waitForResult(uid: string, scanId: string, onStatus?: (status: RemoteSc
       } catch (error) {
         if (settled) return;
         pollTimer = window.setTimeout(() => void poll(), 2_000);
-        if (error instanceof Error && "code" in error && (error as { code?: string }).code === "permission-denied") {
+        if (error instanceof Error && "code" in error && String((error as { code?: string }).code).includes("permission-denied")) {
           finish();
           window.clearTimeout(timeout);
           reject(new RemoteScanError(error.message, "permission-denied", false));
@@ -163,9 +159,10 @@ export async function runRemoteScan({ answers, gameChoice, photoFile, onStatus }
     onStatus?.("uploaded");
   }
 
-  await finalizeScan({ scanId, idempotencyKey: crypto.randomUUID() });
+  const idempotencyKey = crypto.randomUUID();
+  await finalizeScan({ scanId, idempotencyKey });
   onStatus?.("queued");
-  return { scanId, result: await waitForResult(user.uid, scanId, onStatus) };
+  return { scanId, result: await waitForResult(user.uid, scanId, functions, idempotencyKey, onStatus) };
 }
 
 export async function requestRemoteDataDeletion() {

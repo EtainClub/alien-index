@@ -381,7 +381,13 @@ export const finalizeScan = onCall(callableOptions, async (request) => {
   const initialData = initial.data()!;
 
   if (initialData.finalizeIdempotencyKey === input.idempotencyKey && ["queued", "analyzing", "generating", "ready"].includes(initialData.status)) {
-    return { scanId: input.scanId, status: initialData.status };
+    return {
+      scanId: input.scanId,
+      status: initialData.status,
+      result: initialData.result ?? null,
+      generatedAssetPath: typeof initialData.generatedAssetPath === "string" ? initialData.generatedAssetPath : null,
+      failure: initialData.failure ?? null,
+    };
   }
   if (initialData.status !== "draft") {
     throw new HttpsError("failed-precondition", "현재 상태에서는 감별을 시작할 수 없습니다.");
@@ -429,7 +435,7 @@ export const finalizeScan = onCall(callableOptions, async (request) => {
   });
 
   if (!transition.enqueue) {
-    return { scanId: input.scanId, status: transition.status };
+  return { scanId: input.scanId, status: transition.status, result: null, generatedAssetPath: null, failure: null };
   }
 
   try {
@@ -443,7 +449,7 @@ export const finalizeScan = onCall(callableOptions, async (request) => {
     throw new HttpsError("unavailable", "감별 대기열 연결에 실패했습니다. 다시 시도해주세요.");
   }
 
-  return { scanId: input.scanId, status: "queued" };
+  return { scanId: input.scanId, status: "queued", result: null, generatedAssetPath: null, failure: null };
 });
 
 export const retryScan = onCall(callableOptions, async (request) => {
