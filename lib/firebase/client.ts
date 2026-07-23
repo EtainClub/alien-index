@@ -105,11 +105,15 @@ export async function signInWithGoogle(): Promise<User> {
 
   if (currentUser?.isAnonymous) {
     try {
-      return (await linkWithPopup(currentUser, provider)).user;
+      const linkedUser = (await linkWithPopup(currentUser, provider)).user;
+      await linkedUser.getIdToken(true);
+      return linkedUser;
     } catch (error) {
       if ((error as { code?: string }).code !== "auth/credential-already-in-use") throw error;
     }
   }
 
-  return (await signInWithPopup(auth, provider)).user;
+  const signedInUser = (await signInWithPopup(auth, provider)).user;
+  await signedInUser.getIdToken(true);
+  return signedInUser;
 }

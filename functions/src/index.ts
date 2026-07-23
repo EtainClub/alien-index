@@ -105,6 +105,16 @@ function requireUid(request: { auth?: { uid: string } }): string {
   return request.auth.uid;
 }
 
+function isLinkedAuth(request: { auth?: { token?: { firebase?: unknown } } }): boolean {
+  const firebaseToken = request.auth?.token?.firebase;
+  if (!firebaseToken || typeof firebaseToken !== "object") return false;
+  const token = firebaseToken as { sign_in_provider?: unknown; identities?: unknown };
+  const identities = token.identities && typeof token.identities === "object"
+    ? Object.keys(token.identities as Record<string, unknown>)
+    : [];
+  return token.sign_in_provider !== "anonymous" || identities.some((provider) => provider !== "anonymous");
+}
+
 function hashId(value: string): string {
   return createHash("sha256").update(`alien-index-v1:${value}`).digest("hex");
 }
@@ -328,7 +338,7 @@ export const createScan = onCall(callableOptions, async (request) => {
 
     transaction.set(userRef, {
       createdAt: FieldValue.serverTimestamp(),
-      authMode: request.auth?.token.firebase?.sign_in_provider === "anonymous" ? "anonymous" : "linked",
+      authMode: isLinkedAuth(request) ? "linked" : "anonymous",
       locale: "ko-KR",
       consentVersion: input.consentVersion,
     }, { merge: true });
