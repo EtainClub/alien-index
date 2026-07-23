@@ -1,6 +1,6 @@
 "use client";
 
-import { doc, onSnapshot } from "firebase/firestore";
+import { doc, getDocFromServer } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
 import { getDownloadURL, ref, uploadBytes } from "firebase/storage";
 import type { AlienResult } from "@/lib/scoring";
@@ -49,54 +49,71 @@ function waitForResult(uid: string, scanId: string, onStatus?: (status: RemoteSc
   const { auth, firestore, storage } = getFirebaseServices();
   return new Promise<AlienResult>((resolve, reject) => {
     let settled = false;
-    let unsubscribe: () => void = () => {};
-    const timeout = window.setTimeout(() => {
+    let pollTimer: number | null = null;
+    let lastStatus: RemoteScanStatus | null = null;
+    const scanRef = doc(firestore, "users", uid, "scans", scanId);
+    const finish = () => {
       settled = true;
-      unsubscribe();
+      if (pollTimer !== null) window.clearTimeout(pollTimer);
+    };
+    const timeout = window.setTimeout(() => {
+      finish();
       reject(new RemoteScanError("서버 분석이 예상보다 오래 걸리고 있습니다.", "scan-timeout"));
     }, 120_000);
 
-    unsubscribe = onSnapshot(
-      doc(firestore, "users", uid, "scans", scanId),
-      (snapshot) => {
-        if (settled || !snapshot.exists()) return;
+    const poll = async () => {
+      if (settled) return;
+      try {
+        const snapshot = await getDocFromServer(scanRef);
+        if (!snapshot.exists()) {
+          pollTimer = window.setTimeout(() => void poll(), 1_500);
+          return;
+        }
+
         const data = snapshot.data();
         const status = data.status as RemoteScanStatus;
-        onStatus?.(status);
+        if (status !== lastStatus) {
+          lastStatus = status;
+          onStatus?.(status);
+        }
         if (status === "ready" && data.result) {
-          settled = true;
+          finish();
           window.clearTimeout(timeout);
-          unsubscribe();
-          void (async () => {
-            const generatedAssetPath = typeof data.generatedAssetPath === "string" ? data.generatedAssetPath : null;
-            let generatedImageUrl: string | undefined;
-            if (generatedAssetPath && auth.currentUser && !auth.currentUser.isAnonymous) {
-              try {
-                generatedImageUrl = await getDownloadURL(ref(storage, generatedAssetPath));
-              } catch {
-                // A missing/expired generated asset should not block the rules-based result.
-              }
+          const generatedAssetPath = typeof data.generatedAssetPath === "string" ? data.generatedAssetPath : null;
+          let generatedImageUrl: string | undefined;
+          if (generatedAssetPath && auth.currentUser && !auth.currentUser.isAnonymous) {
+            try {
+              generatedImageUrl = await getDownloadURL(ref(storage, generatedAssetPath));
+            } catch {
+              // A missing/expired generated asset should not block the rules-based result.
             }
-            resolve({ ...(data.result as AlienResult), ...(generatedImageUrl ? { generatedImageUrl } : {}) });
-          })();
-        } else if (status === "failed") {
-          settled = true;
+          }
+          resolve({ ...(data.result as AlienResult), ...(generatedImageUrl ? { generatedImageUrl } : {}) });
+          return;
+        }
+        if (status === "failed") {
+          finish();
           window.clearTimeout(timeout);
-          unsubscribe();
           reject(new RemoteScanError(
             "서버 분석에 실패했습니다. 규칙 기반 결과로 계속합니다.",
             String(data.failure?.code ?? "scan-failed"),
             data.failure?.retryable !== false,
           ));
+          return;
         }
-      },
-      (error) => {
+        pollTimer = window.setTimeout(() => void poll(), 1_500);
+      } catch (error) {
         if (settled) return;
-        settled = true;
-        window.clearTimeout(timeout);
-        reject(new RemoteScanError(error.message, error.code));
-      },
-    );
+        pollTimer = window.setTimeout(() => void poll(), 2_000);
+        if (error instanceof Error && "code" in error && (error as { code?: string }).code === "permission-denied") {
+          finish();
+          window.clearTimeout(timeout);
+          reject(new RemoteScanError(error.message, "permission-denied", false));
+        }
+      }
+    };
+
+    void poll();
   });
 }
 
