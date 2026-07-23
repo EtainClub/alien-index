@@ -380,7 +380,7 @@ export const finalizeScan = onCall(callableOptions, async (request) => {
   if (!initial.exists) throw new HttpsError("not-found", "감별 기록을 찾을 수 없습니다.");
   const initialData = initial.data()!;
 
-  if (initialData.finalizeIdempotencyKey === input.idempotencyKey && ["queued", "analyzing", "generating", "ready"].includes(initialData.status)) {
+  if (initialData.finalizeIdempotencyKey === input.idempotencyKey && ["queued", "analyzing", "generating", "ready", "failed"].includes(initialData.status)) {
     return {
       scanId: input.scanId,
       status: initialData.status,
