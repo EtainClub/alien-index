@@ -361,6 +361,7 @@ export const createScan = onCall(callableOptions, async (request) => {
     }, { merge: true });
     transaction.create(scanRef, {
       mode: input.mode,
+      authMode: authMode ? "linked" : "anonymous",
       status: "draft",
       inputVersion: input.inputVersion,
       scoringVersion: "score-v1",
