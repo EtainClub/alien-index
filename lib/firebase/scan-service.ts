@@ -3,7 +3,7 @@
 import { doc, getDocFromServer } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
 import { getDownloadURL, ref, uploadBytes } from "firebase/storage";
-import type { AlienResult } from "@/lib/scoring";
+import { questions, type AlienResult } from "@/lib/scoring";
 import { ensureAnonymousUser, firebaseConfigured, getFirebaseServices } from "./client";
 
 type RemoteScanStatus = "draft" | "uploaded" | "queued" | "analyzing" | "generating" | "ready" | "failed";
@@ -43,6 +43,13 @@ function extensionFor(file: File): string {
   if (file.type === "image/webp") return "webp";
   if (file.type === "image/heic" || file.type === "image/heif") return "heic";
   return "jpg";
+}
+
+function normalizeAnswers(answers: Record<string, number>): Record<string, number> {
+  return Object.fromEntries(questions.map(({ id }) => {
+    const value = Number(answers[id]);
+    return [id, Number.isInteger(value) && value >= 0 && value <= 4 ? value : 2];
+  }));
 }
 
 function waitForResult(uid: string, scanId: string, onStatus?: (status: RemoteScanStatus) => void) {
@@ -134,7 +141,7 @@ export async function runRemoteScan({ answers, gameChoice, photoFile, onStatus }
   const created = await createScan({
     mode: "quick",
     inputVersion: "quick-v1",
-    answers,
+    answers: normalizeAnswers(answers),
     gameSignals: { patternChoice: gameChoice },
     photoKinds: photoFile ? ["eye"] : [],
     consentVersion: "privacy-2026-07",
