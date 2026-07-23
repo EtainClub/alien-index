@@ -760,8 +760,15 @@ export default function AlienIndexApp() {
       if (!remoteScan.result.generatedImageUrl) {
         setAiLoginMessage("AI 결과를 준비하지 못해 규칙 기반 결과를 유지합니다. 잠시 후 다시 시도해주세요.");
       }
-    } catch {
-      setAiLoginMessage("Google 로그인 또는 AI 생성에 실패했습니다. Firebase에서 Google 로그인을 활성화했는지 확인해주세요.");
+    } catch (error) {
+      const code = String((error as { code?: string }).code ?? "");
+      if (code.includes("resource-exhausted")) {
+        setAiLoginMessage("오늘 빠른 감별 한도에 도달했습니다. 내일 다시 시도해주세요.");
+      } else if (code.includes("unauthenticated")) {
+        setAiLoginMessage("Google 로그인 세션이 만료됐습니다. 다시 로그인해주세요.");
+      } else {
+        setAiLoginMessage("Google 로그인 또는 AI 생성에 실패했습니다. 잠시 후 다시 시도해주세요.");
+      }
     } finally {
       setAiLoginState("idle");
     }
