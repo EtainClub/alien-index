@@ -1,5 +1,6 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { initializeApp } from "firebase-admin/app";
+import { getAuth } from "firebase-admin/auth";
 import { getFirestore, FieldValue, Timestamp } from "firebase-admin/firestore";
 import { getFunctions } from "firebase-admin/functions";
 import { getStorage } from "firebase-admin/storage";
@@ -27,6 +28,7 @@ initializeApp();
 setGlobalOptions({ region: "asia-northeast3", maxInstances: 20 });
 
 const db = getFirestore();
+const adminAuth = getAuth();
 db.settings({ ignoreUndefinedProperties: true });
 const bucket = getStorage().bucket();
 const region = "asia-northeast3";
@@ -105,14 +107,22 @@ function requireUid(request: { auth?: { uid: string } }): string {
   return request.auth.uid;
 }
 
-function isLinkedAuth(request: { auth?: { token?: { firebase?: unknown } } }): boolean {
+async function isLinkedAuth(uid: string, request: { auth?: { token?: { firebase?: unknown } } }): Promise<boolean> {
   const firebaseToken = request.auth?.token?.firebase;
-  if (!firebaseToken || typeof firebaseToken !== "object") return false;
-  const token = firebaseToken as { sign_in_provider?: unknown; identities?: unknown };
-  const identities = token.identities && typeof token.identities === "object"
-    ? Object.keys(token.identities as Record<string, unknown>)
-    : [];
-  return token.sign_in_provider !== "anonymous" || identities.some((provider) => provider !== "anonymous");
+  if (firebaseToken && typeof firebaseToken === "object") {
+    const token = firebaseToken as { sign_in_provider?: unknown; identities?: unknown };
+    const identities = token.identities && typeof token.identities === "object"
+      ? Object.keys(token.identities as Record<string, unknown>)
+      : [];
+    if (token.sign_in_provider !== "anonymous" || identities.some((provider) => provider !== "anonymous")) return true;
+  }
+
+  try {
+    const user = await adminAuth.getUser(uid);
+    return user.providerData.some(({ providerId }) => providerId !== "anonymous");
+  } catch {
+    return false;
+  }
 }
 
 function hashId(value: string): string {
@@ -326,6 +336,7 @@ export const createScan = onCall(callableOptions, async (request) => {
   const usageRef = userRef.collection("usage").doc(utcDay());
   const now = Timestamp.now();
   const traceId = randomUUID();
+  const authMode = await isLinkedAuth(uid, request);
 
   await db.runTransaction(async (transaction) => {
     const usageSnapshot = await transaction.get(usageRef);
@@ -338,7 +349,7 @@ export const createScan = onCall(callableOptions, async (request) => {
 
     transaction.set(userRef, {
       createdAt: FieldValue.serverTimestamp(),
-      authMode: isLinkedAuth(request) ? "linked" : "anonymous",
+      authMode: authMode ? "linked" : "anonymous",
       locale: "ko-KR",
       consentVersion: input.consentVersion,
     }, { merge: true });
