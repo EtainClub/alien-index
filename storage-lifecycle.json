@@ -1,0 +1,12 @@
+{
+  "rule": [
+    {
+      "action": {"type": "Delete"},
+      "condition": {"age": 1, "matchesPrefix": ["private/"]}
+    },
+    {
+      "action": {"type": "Delete"},
+      "condition": {"age": 90, "matchesPrefix": ["public/shares/"]}
+    }
+  ]
+}

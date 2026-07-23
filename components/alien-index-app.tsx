@@ -1,7 +1,9 @@
 "use client";
 
 import Image from "next/image";
-import { ChangeEvent, PointerEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { PointerEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { getFirebaseServices, signInWithGoogle } from "@/lib/firebase/client";
+import { requestRemoteDataDeletion, runRemoteScan } from "@/lib/firebase/scan-service";
 import { analyzePhoto } from "@/lib/photo-analyzer";
 import { AlienResult, calculateResult, PhotoSignal, questions } from "@/lib/scoring";
 import { ScanDraft, scanRepository } from "@/lib/session-store";
@@ -114,7 +116,7 @@ function HomeScreen({
           <small>COMING SOON</small>
         </button>
         {hasResult && <button className="restore-button" onClick={onRestore}>최근 외계인 신분증 보기</button>}
-        <p className="privacy-line"><Icon name="shield" size={16}/> 회원가입 없이, 사진은 기기에만 머물러요.</p>
+        <p className="privacy-line"><Icon name="shield" size={16}/> 회원가입 없이 시작 · <a href={sitePath("/privacy")}>개인정보 안내</a></p>
       </div>
     </main>
   );
@@ -245,35 +247,155 @@ function PhotoScreen({
   signal: PhotoSignal | null;
   isReading: boolean;
   error: string | null;
-  onFile: (event: ChangeEvent<HTMLInputElement>) => void;
+  onFile: (file: File) => Promise<void>;
   onBack: () => void;
   onNext: (includePhoto: boolean) => void;
 }) {
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const cameraRequestRef = useRef(0);
+  const [cameraState, setCameraState] = useState<"closed" | "opening" | "open">("closed");
+  const [cameraError, setCameraError] = useState<string | null>(null);
+  const [isCapturing, setIsCapturing] = useState(false);
+
+  const releaseCamera = useCallback(() => {
+    cameraRequestRef.current += 1;
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    streamRef.current = null;
+    if (videoRef.current) videoRef.current.srcObject = null;
+  }, []);
+
+  const closeCamera = useCallback(() => {
+    releaseCamera();
+    setCameraState("closed");
+    setIsCapturing(false);
+  }, [releaseCamera]);
+
+  useEffect(() => releaseCamera, [releaseCamera]);
+
+  const openCamera = async () => {
+    setCameraError(null);
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setCameraError("이 브라우저에서는 직접 촬영을 지원하지 않아요. 보관함에서 사진을 선택해주세요.");
+      return;
+    }
+
+    const requestId = cameraRequestRef.current + 1;
+    cameraRequestRef.current = requestId;
+    setCameraState("opening");
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: false,
+        video: { facingMode: { ideal: "environment" } },
+      });
+      if (cameraRequestRef.current !== requestId) {
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
+
+      streamRef.current = stream;
+      const video = videoRef.current;
+      if (!video) throw new Error("Camera preview is unavailable");
+      video.srcObject = stream;
+      await video.play();
+      setCameraState("open");
+    } catch (cameraAccessError) {
+      if (cameraRequestRef.current !== requestId) return;
+      releaseCamera();
+      setCameraState("closed");
+      const denied = cameraAccessError instanceof DOMException
+        && (cameraAccessError.name === "NotAllowedError" || cameraAccessError.name === "SecurityError");
+      setCameraError(denied
+        ? "카메라 권한이 필요해요. 브라우저 설정에서 권한을 허용한 뒤 다시 시도해주세요."
+        : "카메라를 열지 못했어요. 다른 앱이 카메라를 사용 중인지 확인하거나 보관함을 이용해주세요.");
+    }
+  };
+
+  const capturePhoto = async () => {
+    const video = videoRef.current;
+    if (!video || video.videoWidth === 0 || video.videoHeight === 0) {
+      setCameraError("카메라 화면을 준비하는 중이에요. 잠시 후 다시 촬영해주세요.");
+      return;
+    }
+
+    setIsCapturing(true);
+    const maxEdge = 1600;
+    const scale = Math.min(1, maxEdge / Math.max(video.videoWidth, video.videoHeight));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.round(video.videoWidth * scale);
+    canvas.height = Math.round(video.videoHeight * scale);
+    const context = canvas.getContext("2d");
+    if (!context) {
+      setIsCapturing(false);
+      setCameraError("촬영한 사진을 처리하지 못했어요. 다시 시도해주세요.");
+      return;
+    }
+
+    context.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.9));
+    if (!blob) {
+      setIsCapturing(false);
+      setCameraError("촬영한 사진을 저장하지 못했어요. 다시 시도해주세요.");
+      return;
+    }
+
+    const capturedFile = new File([blob], `alien-signal-${Date.now()}.jpg`, {
+      type: "image/jpeg",
+      lastModified: Date.now(),
+    });
+    closeCamera();
+    await onFile(capturedFile);
+  };
+
+  const cameraVisible = cameraState !== "closed";
+
   return (
     <main className="screen photo-screen">
       <ProgressHeader progress={0.82} onBack={onBack} label="선택 신호" />
       <section className="photo-copy enter-up">
         <div className="optional-chip">OPTIONAL · 선택 사항</div>
         <h2>눈 또는 손의<br/>빛 신호를 더할까요?</h2>
-        <p>얼굴 전체는 필요 없어요. 사진은 업로드되지 않고 이 기기에서만 색과 대비를 읽습니다.</p>
+        <p>얼굴 전체는 필요 없어요. 선택한 사진은 비공개로 전송되며 특징 분석 직후 삭제됩니다.</p>
       </section>
-      <label className={`photo-zone ${preview ? "has-photo" : ""}`}>
-        <input type="file" accept="image/*" capture="environment" onChange={onFile} />
+      <div className={`photo-zone ${preview ? "has-photo" : ""}`}>
         {preview ? (
           <>
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={preview} alt="선택한 눈 또는 손 사진 미리보기" />
-            <span className="photo-change"><Icon name="camera" size={17}/> 다른 사진 선택</span>
+            <img src={preview} alt="촬영하거나 선택한 눈 또는 손 사진 미리보기" />
+            <span className="photo-change"><Icon name="check" size={17}/> 사진 준비 완료</span>
             {isReading && <span className="photo-reading" role="status">시각 신호 읽는 중…</span>}
           </>
         ) : (
           <div className="photo-placeholder">
             <div className="scan-frame"><span/><span/><span/><span/><Icon name="camera" size={32}/></div>
-            <strong>사진 촬영 또는 보관함 열기</strong>
+            <strong>직접 촬영하거나 사진을 선택하세요</strong>
             <span>눈 주변이나 손의 포즈가 보이면 충분해요</span>
           </div>
         )}
-      </label>
+      </div>
+      <input
+        ref={fileInputRef}
+        className="photo-file-input"
+        tabIndex={-1}
+        aria-hidden="true"
+        type="file"
+        accept="image/*"
+        onChange={(event) => {
+          const selectedFile = event.currentTarget.files?.[0];
+          if (selectedFile) void onFile(selectedFile);
+          event.currentTarget.value = "";
+        }}
+      />
+      <div className="photo-source-actions" aria-label="사진 가져오기">
+        <button type="button" className="camera-source-button" onClick={() => void openCamera()}>
+          <Icon name="camera" size={19}/> 사진 촬영
+        </button>
+        <button type="button" className="library-source-button" onClick={() => fileInputRef.current?.click()}>
+          <Icon name="image" size={19}/> 보관함에서 선택
+        </button>
+      </div>
       {signal && (
         <div className="signal-readout">
           <span className="signal-dot" style={{ background: `hsl(${signal.dominantHue} 70% 58%)` }}/>
@@ -281,20 +403,45 @@ function PhotoScreen({
           <Icon name="check" size={18}/>
         </div>
       )}
-      {error && <p className="photo-error" role="alert">{error}</p>}
+      {(error || cameraError) && <p className="photo-error" role="alert">{cameraError || error}</p>}
       <div className="sticky-action photo-actions">
         <button className="primary-button" disabled={isReading} onClick={() => onNext(Boolean(file && signal))}>{file ? "이 신호 사용하기" : "사진 없이 분석하기"} <Icon name="arrow" /></button>
         {file && <button className="text-button" onClick={() => onNext(false)}>사진 건너뛰기</button>}
       </div>
+
+      {cameraVisible && (
+        <div className="camera-dialog" role="dialog" aria-modal="true" aria-labelledby="camera-title">
+          <div className="camera-dialog__header">
+            <div><small>LIVE CAMERA</small><strong id="camera-title">눈 또는 손을 프레임에 맞춰주세요</strong></div>
+            <button type="button" onClick={closeCamera} aria-label="카메라 닫기">×</button>
+          </div>
+          <div className="camera-viewfinder">
+            <video ref={videoRef} autoPlay playsInline muted aria-label="카메라 미리보기" />
+            <span className="camera-corner camera-corner--one"/>
+            <span className="camera-corner camera-corner--two"/>
+            <span className="camera-corner camera-corner--three"/>
+            <span className="camera-corner camera-corner--four"/>
+            {cameraState === "opening" && <div className="camera-loading" role="status">카메라 연결 중…</div>}
+          </div>
+          <p>원본은 서버로 전송되지 않으며 촬영 후 이 기기에서만 분석됩니다.</p>
+          <div className="camera-controls">
+            <button type="button" className="camera-cancel" onClick={closeCamera}>취소</button>
+            <button type="button" className="camera-shutter" onClick={() => void capturePhoto()} disabled={cameraState !== "open" || isCapturing} aria-label="사진 촬영">
+              <span/>
+            </button>
+            <span aria-hidden="true"/>
+          </div>
+        </div>
+      )}
     </main>
   );
 }
 
 function AnalysisScreen({ step }: { step: number }) {
   const steps = [
-    { label: "점수 궤도 계산", detail: "완료한 모듈의 가중치 재조정" },
-    { label: "캐릭터 색 동조", detail: "유형과 시각 신호 매핑" },
-    { label: "결과 안전하게 보관", detail: "이 기기의 로컬 저장소" },
+    { label: "점수 궤도 계산", detail: "버전이 고정된 score-v1 규칙 엔진" },
+    { label: "시각 신호 정리", detail: "허용된 색상과 대비 특징만 추출" },
+    { label: "결과 안전하게 보관", detail: "비공개 계정 저장과 기기 캐시" },
     { label: "외계인 신분증 발급", detail: "최종 화면 렌더링 준비" },
   ];
   return (
@@ -352,7 +499,17 @@ function Crest({ result }: { result: AlienResult }) {
   );
 }
 
-function ResultScreen({ result, onRestart, onShare, shareState }: { result: AlienResult; onRestart: () => void; onShare: () => void; shareState: string }) {
+function ResultScreen({ result, onRestart, onShare, onDelete, shareState, deleteState, onUnlockAi, aiLoginState, aiLoginMessage }: {
+  result: AlienResult;
+  onRestart: () => void;
+  onShare: () => void;
+  onDelete: () => void;
+  shareState: string;
+  deleteState: string;
+  onUnlockAi: () => void;
+  aiLoginState: "idle" | "signing-in";
+  aiLoginMessage: string | null;
+}) {
   const portraitShift = result.accentHue - 210;
   const identityNumber = `${result.archetypeKey.slice(0, 2).toUpperCase()}-${String(result.score).padStart(2, "0")}-${String(result.confidence).padStart(2, "0")}`;
   return (
@@ -367,7 +524,7 @@ function ResultScreen({ result, onRestart, onShare, shareState }: { result: Alie
 
       <section className="identity-card">
         <div className="portrait-wrap">
-          <Image src={sitePath("/alien-portrait.png")} alt={`${result.archetype} 외계인 캐릭터`} width={1024} height={1536} priority />
+          <Image src={result.generatedImageUrl ?? sitePath("/alien-portrait.png")} alt={`${result.archetype} 외계인 캐릭터`} width={1024} height={1536} priority unoptimized />
           <div className="portrait-tint"/>
           <span className="portrait-label">IDENTITY CONFIRMED <Icon name="check" size={13}/></span>
         </div>
@@ -377,6 +534,21 @@ function ResultScreen({ result, onRestart, onShare, shareState }: { result: Alie
           <div><span>IDENTITY NO.</span><strong>{identityNumber}</strong></div>
         </div>
       </section>
+
+      {!result.generatedImageUrl && (
+        <section className="ai-gate" aria-labelledby="ai-gate-title">
+          <div className="ai-gate__copy">
+            <p className="eyebrow">OPTIONAL AI ENHANCEMENT</p>
+            <h2 id="ai-gate-title">AI 이미지와 해석을 보려면 로그인하세요</h2>
+            <p>로그인하지 않아도 규칙 기반 점수와 신호 결과는 계속 볼 수 있어요. Google 로그인 후 이 화면에서 AI 결과를 다시 생성합니다.</p>
+          </div>
+          <button className="primary-button" onClick={onUnlockAi} disabled={aiLoginState === "signing-in"}>
+            {aiLoginState === "signing-in" ? "AI 결과 준비 중…" : "Google로 로그인하고 AI 결과 보기"}
+            {aiLoginState !== "signing-in" && <Icon name="arrow" />}
+          </button>
+          {aiLoginMessage && <p className="ai-gate__message" role="alert">{aiLoginMessage}</p>}
+        </section>
+      )}
 
       <section className="result-section">
         <div className="section-heading"><div><p className="eyebrow">TOP SIGNALS</p><h2>가장 강한 외계 신호</h2></div><span>TOP 3</span></div>
@@ -404,6 +576,7 @@ function ResultScreen({ result, onRestart, onShare, shareState }: { result: Alie
       <section className="result-actions">
         <button className="result-share" onClick={onShare}><Icon name="share"/> {shareState}</button>
         <button className="result-restart" onClick={onRestart}><Icon name="refresh"/> 다시 감별하기</button>
+        <button className="result-delete" onClick={onDelete}>{deleteState}</button>
         <p>공유에는 원본 사진이나 답변이 포함되지 않습니다.</p>
       </section>
     </main>
@@ -423,6 +596,9 @@ export default function AlienIndexApp() {
   const [analysisStep, setAnalysisStep] = useState(0);
   const [result, setResult] = useState<AlienResult | null>(null);
   const [shareState, setShareState] = useState("결과 공유하기");
+  const [deleteState, setDeleteState] = useState("내 데이터 삭제");
+  const [aiLoginState, setAiLoginState] = useState<"idle" | "signing-in">("idle");
+  const [aiLoginMessage, setAiLoginMessage] = useState<string | null>(null);
   const [savedDraft, setSavedDraft] = useState<ScanDraft | null>(null);
   const [hasSavedResult, setHasSavedResult] = useState(false);
   const [storageReady, setStorageReady] = useState(false);
@@ -455,6 +631,7 @@ export default function AlienIndexApp() {
     if (photoPreview) URL.revokeObjectURL(photoPreview);
     setScreen("home"); setQuestionIndex(0); setAnswers({}); setGameChoice(null);
     setPhotoFile(null); setPhotoPreview(null); setPhotoSignal(null); setPhotoError(null); setResult(null); setAnalysisStep(0);
+    setAiLoginState("idle"); setAiLoginMessage(null);
     setSavedDraft(null);
     void scanRepository.clearDraft();
     window.scrollTo({ top: 0, behavior: "smooth" });
@@ -464,6 +641,7 @@ export default function AlienIndexApp() {
     if (photoPreview) URL.revokeObjectURL(photoPreview);
     setQuestionIndex(0); setAnswers({}); setGameChoice(null);
     setPhotoFile(null); setPhotoPreview(null); setPhotoSignal(null); setPhotoError(null); setResult(null); setAnalysisStep(0);
+    setAiLoginState("idle"); setAiLoginMessage(null);
     setSavedDraft(null);
     void scanRepository.clearDraft();
     setScreen("briefing");
@@ -494,9 +672,7 @@ export default function AlienIndexApp() {
     else setScreen("briefing");
   };
 
-  const handlePhoto = async (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
+  const handlePhoto = async (file: File) => {
     if (!file.type.startsWith("image/")) {
       setPhotoError("이미지 파일만 사용할 수 있어요.");
       return;
@@ -523,13 +699,33 @@ export default function AlienIndexApp() {
     setAnalysisStep(0);
     const minimumReveal = new Promise((resolve) => window.setTimeout(resolve, 850));
 
-    const nextResult = calculateResult(answers, gameChoice, includePhoto ? photoSignal : null);
+    const localResult = calculateResult(answers, gameChoice, includePhoto ? photoSignal : null);
+    let nextResult = localResult;
     setAnalysisStep(1);
 
     const portrait = new window.Image();
     portrait.src = sitePath("/alien-portrait.png");
     try { await portrait.decode(); } catch { /* The result still has a CSS fallback background. */ }
     setAnalysisStep(2);
+
+    if (gameChoice !== null) {
+      try {
+        const remoteScan = await runRemoteScan({
+          answers,
+          gameChoice,
+          photoFile: includePhoto ? photoFile : null,
+          onStatus: (status) => {
+            if (status === "analyzing") setAnalysisStep(1);
+            if (status === "generating") setAnalysisStep(2);
+            if (status === "ready") setAnalysisStep(3);
+          },
+        });
+        nextResult = remoteScan.result;
+      } catch {
+        // Firebase 또는 AI 작업이 실패해도 고정된 score-v1 로컬 엔진으로 결과를 제공합니다.
+        nextResult = localResult;
+      }
+    }
 
     setResult(nextResult);
     await scanRepository.save({ id: crypto.randomUUID(), createdAt: new Date().toISOString(), result: nextResult });
@@ -542,11 +738,52 @@ export default function AlienIndexApp() {
     setAnalysisStep(4);
     await minimumReveal;
     setScreen("result");
-  }, [answers, gameChoice, photoSignal]);
+  }, [answers, gameChoice, photoFile, photoSignal]);
+
+  const unlockAi = useCallback(async () => {
+    if (gameChoice === null || aiLoginState === "signing-in") return;
+    setAiLoginState("signing-in");
+    setAiLoginMessage(null);
+    try {
+      await signInWithGoogle();
+      const remoteScan = await runRemoteScan({
+        answers,
+        gameChoice,
+        photoFile,
+        onStatus: (status) => {
+          if (status === "generating") setAiLoginMessage("AI 이미지를 생성하고 있어요…");
+          if (status === "ready") setAiLoginMessage(null);
+        },
+      });
+      setResult(remoteScan.result);
+      await scanRepository.save({ id: crypto.randomUUID(), createdAt: new Date().toISOString(), result: remoteScan.result });
+      if (!remoteScan.result.generatedImageUrl) {
+        setAiLoginMessage("AI 결과를 준비하지 못해 규칙 기반 결과를 유지합니다. 잠시 후 다시 시도해주세요.");
+      }
+    } catch {
+      setAiLoginMessage("Google 로그인 또는 AI 생성에 실패했습니다. Firebase에서 Google 로그인을 활성화했는지 확인해주세요.");
+    } finally {
+      setAiLoginState("idle");
+    }
+  }, [aiLoginState, answers, gameChoice, photoFile]);
 
   const restoreResult = async () => {
     const saved = await scanRepository.latest();
-    if (saved) { setResult(saved.result); setScreen("result"); }
+    if (!saved) return;
+    let restoredResult = saved.result;
+    try {
+      const { auth } = getFirebaseServices();
+      await auth.authStateReady();
+      if (!auth.currentUser || auth.currentUser.isAnonymous) {
+        const { generatedImageUrl: _generatedImageUrl, ...rulesOnlyResult } = restoredResult;
+        restoredResult = rulesOnlyResult;
+      }
+    } catch {
+      const { generatedImageUrl: _generatedImageUrl, ...rulesOnlyResult } = restoredResult;
+      restoredResult = rulesOnlyResult;
+    }
+    setResult(restoredResult);
+    setScreen("result");
   };
 
   const share = async () => {
@@ -560,6 +797,21 @@ export default function AlienIndexApp() {
     }
   };
 
+  const deleteData = async () => {
+    if (!window.confirm("저장된 감별 결과와 비공개 사진, 공유 데이터를 삭제할까요? 이 작업은 되돌릴 수 없습니다.")) return;
+    setDeleteState("삭제 요청 중…");
+    try {
+      await requestRemoteDataDeletion();
+      setDeleteState("삭제 요청 완료");
+    } catch {
+      setDeleteState("서버 삭제 재시도 필요");
+    } finally {
+      window.localStorage.removeItem("alien-index:last-scan");
+      window.localStorage.removeItem("alien-index:scan-draft");
+      setHasSavedResult(false);
+    }
+  };
+
   const current = useMemo(() => {
     if (screen === "home") return <HomeScreen onStart={startFresh} onRestore={restoreResult} onResume={resumeDraft} hasResult={hasSavedResult} draftProgress={draftProgress(savedDraft)}/>;
     if (screen === "briefing") return <BriefingScreen onBack={() => setScreen("home")} onStart={() => setScreen("quiz")}/>;
@@ -567,9 +819,9 @@ export default function AlienIndexApp() {
     if (screen === "game") return <GameScreen selected={gameChoice} onSelect={setGameChoice} onBack={() => { setQuestionIndex(questions.length - 1); setScreen("quiz"); }} onNext={() => setScreen("photo")}/>;
     if (screen === "photo") return <PhotoScreen file={photoFile} preview={photoPreview} signal={photoSignal} isReading={photoReading} error={photoError} onFile={handlePhoto} onBack={() => setScreen("game")} onNext={beginAnalysis}/>;
     if (screen === "analysis") return <AnalysisScreen step={analysisStep}/>;
-    if (screen === "result" && result) return <ResultScreen result={result} onRestart={reset} onShare={share} shareState={shareState}/>;
+    if (screen === "result" && result) return <ResultScreen result={result} onRestart={reset} onShare={share} onDelete={deleteData} shareState={shareState} deleteState={deleteState} onUnlockAi={unlockAi} aiLoginState={aiLoginState} aiLoginMessage={aiLoginMessage}/>;
     return null;
-  }, [screen, questionIndex, answers, gameChoice, photoFile, photoPreview, photoSignal, photoReading, photoError, analysisStep, result, shareState, beginAnalysis, reset, hasSavedResult, savedDraft]);
+  }, [screen, questionIndex, answers, gameChoice, photoFile, photoPreview, photoSignal, photoReading, photoError, analysisStep, result, shareState, deleteState, aiLoginState, aiLoginMessage, beginAnalysis, reset, unlockAi, hasSavedResult, savedDraft]);
 
   return <div className={`app-shell app-shell--${screen}`}>{current}</div>;
 }

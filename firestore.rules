@@ -1,0 +1,54 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function owns(uid) {
+      return signedIn() && request.auth.uid == uid;
+    }
+
+    function isAdmin() {
+      return signedIn() && request.auth.token.admin == true;
+    }
+
+    match /users/{uid} {
+      allow get: if owns(uid);
+      allow list, create, update, delete: if false;
+
+      match /scans/{scanId} {
+        allow get: if owns(uid);
+        allow list: if owns(uid)
+          && request.query.limit != null
+          && request.query.limit <= 50;
+        allow create, update, delete: if false;
+      }
+
+      match /usage/{day} {
+        allow get: if owns(uid);
+        allow list, create, update, delete: if false;
+      }
+    }
+
+    match /shares/{shareId} {
+      allow get: if resource.data.revokedAt == null
+        && resource.data.expiresAt is timestamp
+        && resource.data.expiresAt > request.time;
+      allow list, create, update, delete: if false;
+    }
+
+    match /admin/{document=**} {
+      allow read, write: if isAdmin();
+    }
+
+    match /jobs/{jobId} {
+      allow read, write: if false;
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

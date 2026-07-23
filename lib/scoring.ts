@@ -28,6 +28,7 @@ export type AlienResult = {
   origin: string;
   signals: Array<{ label: string; value: number; detail: string }>;
   accentHue: number;
+  generatedImageUrl?: string;
 };
 
 export const questions: Question[] = [

@@ -1,0 +1,48 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+    function owns(uid) {
+      return request.auth != null && request.auth.uid == uid;
+    }
+
+    function validImage() {
+      return request.resource.size < 15 * 1024 * 1024
+        && request.resource.contentType.matches('image/(jpeg|png|webp|heic|heif)');
+    }
+
+    function validSourceMetadata(scanId) {
+      return request.resource.metadata.keys().hasOnly(['scanId', 'kind', 'schemaVersion'])
+        && request.resource.metadata.scanId == scanId
+        && request.resource.metadata.kind.matches('eye|hand')
+        && request.resource.metadata.schemaVersion == 'photo-v1';
+    }
+
+    match /private/{uid}/scans/{scanId}/source/{fileName} {
+      allow create: if owns(uid)
+        && validImage()
+        && validSourceMetadata(scanId)
+        && fileName.matches('(eye|hand)\\.(jpg|jpeg|png|webp|heic)');
+      allow delete: if owns(uid);
+      allow read, update: if false;
+    }
+
+    match /private/{uid}/scans/{scanId}/normalized/{fileName} {
+      allow read, write: if false;
+    }
+
+    match /private/{uid}/scans/{scanId}/generated/{fileName} {
+      allow read: if owns(uid);
+      allow write: if false;
+    }
+
+    match /public/shares/{shareId}/{fileName} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}
